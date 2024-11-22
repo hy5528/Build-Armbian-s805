@@ -1,52 +1,36 @@
 #!/bin/bash
-#
-# Copyright (c) 2021 Igor Pecovnik, igor.pecovnik@gma**.com
+# Copyright (c) 2015 Igor Pecovnik, igor.pecovnik@gma**.com
 #
 # This file is licensed under the terms of the GNU General Public
 # License version 2. This program is licensed "as is" without any
 # warranty of any kind, whether express or implied.
-#
+
 # This file is a part of the Armbian build script
 # https://github.com/armbian/build/
 
+# Create board support packages
 #
 # Functions:
 # create_board_package
 
-
-
-
 create_board_package()
 {
-	display_alert "Creating board support package for CLI" "$CHOSEN_ROOTFS" "info"
+	display_alert "Creating board support package" "$BOARD $BRANCH" "info"
 
 	bsptempdir=$(mktemp -d)
 	chmod 700 ${bsptempdir}
-	trap "ret=\$?; rm -rf \"${bsptempdir}\" ; exit \$ret" 0 1 2 3 15
-	local destination=${bsptempdir}/${BSP_CLI_PACKAGE_FULLNAME}
+	trap "rm -rf \"${bsptempdir}\" ; exit 0" 0 1 2 3 15
+	local destination=${bsptempdir}/${RELEASE}/${CHOSEN_ROOTFS}_${REVISION}_${ARCH}
 	mkdir -p "${destination}"/DEBIAN
 	cd $destination
 
-	# copy general overlay from packages/bsp-cli
-	copy_all_packages_files_for "bsp-cli"
-
 	# install copy of boot script & environment file
-	if [[ -n "${BOOTSCRIPT}" ]]; then
-		# @TODO: add extension method bsp_prepare_bootloader(), refactor into u-boot extension
-		local bootscript_src=${BOOTSCRIPT%%:*}
-		local bootscript_dst=${BOOTSCRIPT##*:}
-		mkdir -p "${destination}"/usr/share/armbian/
-	
-		if [ -f "${USERPATCHES_PATH}/bootscripts/${bootscript_src}" ]; then
-			cp "${USERPATCHES_PATH}/bootscripts/${bootscript_src}" "${destination}/usr/share/armbian/${bootscript_dst}"
-		else
-			cp "${SRC}/config/bootscripts/${bootscript_src}" "${destination}/usr/share/armbian/${bootscript_dst}"
-		fi
-
-		if [[ -n $BOOTENV_FILE && -f $SRC/config/bootenv/$BOOTENV_FILE ]]; then
-			cp "${SRC}/config/bootenv/${BOOTENV_FILE}" "${destination}"/usr/share/armbian/armbianEnv.txt
-		fi
-	fi
+	local bootscript_src=${BOOTSCRIPT%%:*}
+	local bootscript_dst=${BOOTSCRIPT##*:}
+	mkdir -p "${destination}"/usr/share/armbian/
+	cp "${SRC}/config/bootscripts/${bootscript_src}" "${destination}/usr/share/armbian/${bootscript_dst}"
+	[[ -n $BOOTENV_FILE && -f $SRC/config/bootenv/$BOOTENV_FILE ]] && \
+		cp "${SRC}/config/bootenv/${BOOTENV_FILE}" "${destination}"/usr/share/armbian/armbianEnv.txt
 
 	# add configuration for setting uboot environment from userspace with: fw_setenv fw_printenv
 	if [[ -n $UBOOT_FW_ENV ]]; then
@@ -62,7 +46,7 @@ create_board_package()
 	# Depends: linux-base is needed for "linux-version" command in initrd cleanup script
 	# Depends: fping is needed for armbianmonitor to upload armbian-hardware-monitor.log
 	cat <<-EOF > "${destination}"/DEBIAN/control
-	Package: ${BSP_CLI_PACKAGE_NAME}
+	Package: linux-${RELEASE}-root-${DEB_BRANCH}${BOARD}
 	Version: $REVISION
 	Architecture: $ARCH
 	Maintainer: $MAINTAINER <$MAINTAINERMAIL>
@@ -70,12 +54,12 @@ create_board_package()
 	Section: kernel
 	Priority: optional
 	Depends: bash, linux-base, u-boot-tools, initramfs-tools, lsb-release, fping
-	Provides: linux-${RELEASE}-root-legacy-$BOARD, linux-${RELEASE}-root-current-$BOARD, linux-${RELEASE}-root-edge-$BOARD
+	Provides: armbian-bsp
+	Conflicts: armbian-bsp
 	Suggests: armbian-config
-	Replaces: zram-config, base-files, armbian-tools-$RELEASE, linux-${RELEASE}-root-legacy-$BOARD (<< $REVISION~), linux-${RELEASE}-root-current-$BOARD (<< $REVISION~), linux-${RELEASE}-root-edge-$BOARD (<< $REVISION~)
-	Breaks: linux-${RELEASE}-root-legacy-$BOARD (<< $REVISION~), linux-${RELEASE}-root-current-$BOARD (<< $REVISION~), linux-${RELEASE}-root-edge-$BOARD (<< $REVISION~)
+	Replaces: zram-config, base-files, armbian-tools-$RELEASE
 	Recommends: bsdutils, parted, util-linux, toilet
-	Description: Armbian board support files for $BOARD
+	Description: Armbian tweaks for $RELEASE on $BOARD ($BRANCH branch)
 	EOF
 
 	# set up pre install script
@@ -134,8 +118,7 @@ create_board_package()
 	[ -f "/lib/systemd/system/resize2fs.service" ] && rm /lib/systemd/system/resize2fs.service
 	[ -f "/usr/lib/armbian/apt-updates" ] && rm /usr/lib/armbian/apt-updates
 	[ -f "/usr/lib/armbian/firstrun-config.sh" ] && rm /usr/lib/armbian/firstrun-config.sh
-	# fix for https://bugs.launchpad.net/ubuntu/+source/lightdm-gtk-greeter/+bug/1897491
-	[ -d "/var/lib/lightdm" ] && (chown -R lightdm:lightdm /var/lib/lightdm ; chmod 0750 /var/lib/lightdm)
+	dpkg-divert --quiet --package linux-${RELEASE}-root-${DEB_BRANCH}${BOARD} --add --rename --divert /etc/mpv/mpv-dist.conf /etc/mpv/mpv.conf
 	exit 0
 	EOF
 
@@ -146,6 +129,7 @@ create_board_package()
 	#!/bin/sh
 	if [ remove = "\$1" ] || [ abort-install = "\$1" ]; then
 
+	    dpkg-divert --quiet --package linux-${RELEASE}-root-${DEB_BRANCH}${BOARD} --remove --rename	--divert /etc/mpv/mpv-dist.conf /etc/mpv/mpv.conf
 	    systemctl disable armbian-hardware-monitor.service armbian-hardware-optimize.service >/dev/null 2>&1
 	    systemctl disable armbian-zram-config.service armbian-ramlog.service >/dev/null 2>&1
 
@@ -162,7 +146,7 @@ create_board_package()
 	# ${BOARD} BSP post installation script
 	#
 
-	[ -f /etc/lib/systemd/system/armbian-ramlog.service ] && systemctl --no-reload enable armbian-ramlog.service
+	systemctl --no-reload enable armbian-ramlog.service
 
 	# check if it was disabled in config and disable in new service
 	if [ -n "\$(grep -w '^ENABLED=false' /etc/default/log2ram 2> /dev/null)" ]; then
@@ -181,6 +165,17 @@ create_board_package()
 	fi
 
 	EOF
+
+	if [[ $RELEASE == bionic ]] || [[ $RELEASE == focal && $BOARDFAMILY == sun50iw6 ]]; then
+		cat <<-EOF >> "${destination}"/DEBIAN/postinst
+		# temporally disable acceleration on some arch in Bionic due to broken mesa packages
+		echo 'Section "Device"
+		\tIdentifier \t"Default Device"
+		\tOption \t"AccelMethod" "none"
+		EndSection' >> /etc/X11/xorg.conf.d/01-armbian-defaults.conf
+		EOF
+	fi
+
 	# install bootscripts if they are not present. Fix upgrades from old images
 	if [[ $FORCE_BOOTSCRIPT_UPDATE == yes ]]; then
 	    cat <<-EOF >> "${destination}"/DEBIAN/postinst
@@ -214,8 +209,8 @@ create_board_package()
     rootdev=\$(sed -e 's/^.*root=//' -e 's/ .*\$//' < /proc/cmdline)
     rootfstype=\$(sed -e 's/^.*rootfstype=//' -e 's/ .*$//' < /proc/cmdline)
 
-    # recreate armbianEnv.txt if it and extlinux does not exists
-    if [ ! -f /boot/armbianEnv.txt ] && [ ! -f /boot/extlinux/extlinux.conf ]; then
+    # recreate armbianEnv.txt only not exists
+    if [ ! -f /boot/armbianEnv.txt ]; then
       cp /usr/share/armbian/armbianEnv.txt /boot  >/dev/null 2>&1
       echo "rootdev="\$rootdev >> /boot/armbianEnv.txt
       echo "rootfstype="\$rootfstype >> /boot/armbianEnv.txt
@@ -227,17 +222,17 @@ create_board_package()
 
 fi
 
-	[ ! -f "/etc/network/interfaces" ] && [ -f "/etc/network/interfaces.default" ] && cp /etc/network/interfaces.default /etc/network/interfaces
+	[ ! -f "/etc/network/interfaces" ] && cp /etc/network/interfaces.default /etc/network/interfaces
 	ln -sf /var/run/motd /etc/motd
 	rm -f /etc/update-motd.d/00-header /etc/update-motd.d/10-help-text
 
 	if [ ! -f "/etc/default/armbian-motd" ]; then
 		mv /etc/default/armbian-motd.dpkg-dist /etc/default/armbian-motd
 	fi
-	if [ ! -f "/etc/default/armbian-ramlog" ] && [ -f /etc/default/armbian-ramlog.dpkg-dist ]; then
+	if [ ! -f "/etc/default/armbian-ramlog" ]; then
 		mv /etc/default/armbian-ramlog.dpkg-dist /etc/default/armbian-ramlog
 	fi
-	if [ ! -f "/etc/default/armbian-zram-config" ] && [ -f /etc/default/armbian-zram-config.dpkg-dist ]; then
+	if [ ! -f "/etc/default/armbian-zram-config" ]; then
 		mv /etc/default/armbian-zram-config.dpkg-dist /etc/default/armbian-zram-config
 	fi
 
@@ -245,16 +240,11 @@ fi
 		mv /usr/lib/chromium-browser/master_preferences.dpkg-dist /usr/lib/chromium-browser/master_preferences
 	fi
 
-    # Read release value
-	if [ -f /etc/lsb-release ]; then
-		RELEASE=\$(cat /etc/lsb-release | grep CODENAME | cut -d"=" -f2 | sed 's/.*/\u&/')
-		sed -i "s/^PRETTY_NAME=.*/PRETTY_NAME=\"${VENDOR} $REVISION "\${RELEASE}"\"/" /etc/os-release
-		echo "${VENDOR} ${REVISION} \${RELEASE} \\l \n" > /etc/issue
-		echo "${VENDOR} ${REVISION} \${RELEASE}" > /etc/issue.net
-	fi
+	sed -i "s/^PRETTY_NAME=.*/PRETTY_NAME=\"Armbian $REVISION "${RELEASE^}"\"/" /etc/os-release
+	echo "Armbian ${REVISION} ${RELEASE^} \\l \n" > /etc/issue
+	echo "Armbian ${REVISION} ${RELEASE^}" > /etc/issue.net
 
-	# Reload services
-	systemctl --no-reload enable armbian-hardware-monitor.service armbian-hardware-optimize.service armbian-zram-config.service armbian-led-state.service >/dev/null 2>&1
+	systemctl --no-reload enable armbian-hardware-monitor.service armbian-hardware-optimize.service armbian-zram-config.service >/dev/null 2>&1
 	exit 0
 	EOF
 
@@ -274,13 +264,6 @@ fi
 	activate update-initramfs
 	EOF
 
-	# copy distribution support status
-	local releases=($(find ${SRC}/config/distributions -mindepth 1 -maxdepth 1 -type d))
-	for i in ${releases[@]}
-	do
-		echo "$(echo $i | sed 's/.*\///')=$(cat $i/support)" >> "${destination}"/etc/armbian-distribution-status
-	done
-
 	# armhwinfo, firstrun, armbianmonitor, etc. config file
 	cat <<-EOF > "${destination}"/etc/armbian-release
 	# PLEASE DO NOT EDIT THIS FILE
@@ -289,8 +272,11 @@ fi
 	BOARDFAMILY=${BOARDFAMILY}
 	BUILD_REPOSITORY_URL=${BUILD_REPOSITORY_URL}
 	BUILD_REPOSITORY_COMMIT=${BUILD_REPOSITORY_COMMIT}
+	DISTRIBUTION_CODENAME=${RELEASE}
+	DISTRIBUTION_STATUS=${DISTRIBUTION_STATUS}
 	VERSION=$REVISION
 	LINUXFAMILY=$LINUXFAMILY
+	BRANCH=$BRANCH
 	ARCH=$ARCHITECTURE
 	IMAGE_TYPE=$IMAGE_TYPE
 	BOARD_TYPE=$BOARD_TYPE
@@ -301,13 +287,15 @@ fi
 	# this is required for NFS boot to prevent deconfiguring the network on shutdown
 	sed -i 's/#no-auto-down/no-auto-down/g' "${destination}"/etc/network/interfaces.default
 
+	if [[ $LINUXFAMILY == sunxi* ]]; then
+		# add mpv config for x11 output - slow, but it works compared to no config at all
+		# TODO: Test which output driver is better with DRM
+		mkdir -p "${destination}"/etc/mpv/
+		cp "${SRC}"/packages/bsp/mpv/mpv_mainline.conf "${destination}"/etc/mpv/mpv.conf
+	fi
+
 	# execute $LINUXFAMILY-specific tweaks
 	[[ $(type -t family_tweaks_bsp) == function ]] && family_tweaks_bsp
-
-	call_extension_method "post_family_tweaks_bsp" << 'POST_FAMILY_TWEAKS_BSP'
-*family_tweaks_bsp overrrides what is in the config, so give it a chance to override the family tweaks*
-This should be implemented by the config to tweak the BSP, after the board or family has had the chance to.
-POST_FAMILY_TWEAKS_BSP
 
 	# add some summary to the image
 	fingerprint_image "${destination}/etc/armbian.txt"
@@ -317,10 +305,10 @@ POST_FAMILY_TWEAKS_BSP
 	find "${destination}" ! -type l -print0 2>/dev/null | xargs -0r chmod 'go=rX,u+rw,a-s'
 
 	# create board DEB file
-	fakeroot dpkg-deb -b -Z${DEB_COMPRESS} "${destination}" "${destination}.deb" >> "${DEST}"/${LOG_SUBPATH}/output.log 2>&1
-	mkdir -p "${DEB_STORAGE}/"
-	rsync --remove-source-files -rq "${destination}.deb" "${DEB_STORAGE}/"
-
+	display_alert "Building package" "$CHOSEN_ROOTFS" "info"
+	fakeroot dpkg-deb -b "${destination}" "${destination}.deb" >> "${DEST}"/debug/install.log 2>&1
+	mkdir -p "${DEB_STORAGE}/${RELEASE}/"
+	rsync --remove-source-files -rq "${destination}.deb" "${DEB_STORAGE}/${RELEASE}/"
 	# cleanup
 	rm -rf ${bsptempdir}
 }
