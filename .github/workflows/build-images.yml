@@ -30,4 +30,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: built-images
-          path: Build-Armbian/output/images/
+          path: s805-armbian-build/output/images/
